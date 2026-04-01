@@ -1,0 +1,9 @@
+[server]
+    port = 3000
+    headless = true
+    enableCORS = false
+    baseUrlPath = "check-steel-beam"
+
+[theme]
+    base="light"
+    primaryColor="blue"

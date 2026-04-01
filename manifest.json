@@ -1,0 +1,14 @@
+{
+  "name": "check-steel-beam",
+  "build_context": "CheckSteelBeam",
+  "icon": "circle-slash-2",
+  "title": {
+    "en": "SteelBeam",
+    "it": "SteelBeam"
+  },
+  "description": {
+    "en": "Interactive dashboard for check commercial steel profiles.",
+    "it": "Dashboard interattiva per la verifica dei profili commerciali in acciaio."
+  },
+  "required_subscription": "free"
+}
