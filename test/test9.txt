@@ -1,0 +1,75 @@
+{
+  "test_id": "TC_LIT_09_BEAM_INTERMEDIATE_RESTRAINTS",
+  "description": "Simply supported beam with intermediate lateral restraints - IPE 400, S235. Verification of LTB with discrete restraints per EN1993-1-1 6.3.2.3. Source: Steel Buildings in Europe (Access Steel).",
+  "source": {
+    "title": "Simply supported beam with intermediate lateral restraints",
+    "publisher": "Steel Buildings in Europe / Access Steel",
+    "document_id": "MSB04 - Worked Example A.2",
+    "url": "https://infosteel.be/images/Steel-Buildings-in-Europe/MSB04/77/",
+    "note": "Validated benchmark example from European steel construction guidelines"
+  },
+  "input": {
+    "design_code": "EN1993-1-1:2005",
+    "acciaio": "S235",
+    "fy_MPa": 235,
+    "gamma_M0": 1.0,
+    "gamma_M1": 1.0,
+    "section": {
+      "designation": "IPE 400",
+      "Wpl_y_cm3": 1307,
+      "Iz_cm4": 1318,
+      "h_mm": 400,
+      "b_f_mm": 180,
+      "t_f_mm": 13.5,
+      "t_w_mm": 8.6,
+      "r_mm": 21
+    },
+    "geometry": {
+      "L_total_m": 10.0,
+      "restraint_spacing_m": 2.5,
+      "n_restraints": 3
+    },
+    "actions": {
+      "loading_type": "uniformly distributed load",
+      "q_Ed_kN_per_m": 20.0,
+      "My_Ed_max_kNm": 250.0
+    },
+    "ltb": {
+      "restraint_type": "lateral at compression flange only (not torsional)",
+      "restraint_spacing_Lc_m": 2.5,
+      "method": "EN1993-1-1 6.3.2.3 (simplified for rolled sections)"
+    },
+    "restraint_conditions": {
+      "kc_factor": 1.0,
+      "c0_parameter": 0.50,
+      "lambda_c0_limit": 0.583
+    }
+  },
+  "expected_output": {
+    "section_properties": {
+      "Av_shear_cm2": 42.69,
+      "Vpl_Rd_kN": 579.2,
+      "VEd_max_kN": 100.0,
+      "shear_check_ok": true
+    },
+    "ltb_restraint_check": {
+      "ifz_cm": 4.57,
+      "lambda_f": 0.583,
+      "lambda_f_formula": "Lc / (ifz * 93.9 * ε)",
+      "c0_Mcr_McRd_ratio": 0.627,
+      "verification": "lambda_f ≤ c0·(Mcr/McRd)",
+      "ok": true
+    },
+    "ltb_resistance": {
+      "Mb_Rd_kNm": 307.15,
+      "utilization": 0.814,
+      "ok": true
+    }
+  },
+  "verification_metadata": {
+    "test_type": "ltb_intermediate_restraints",
+    "critical_check": "Simplified method 6.3.2.3 for rolled sections with discrete compression flange restraint",
+    "reference_values_source": "Steel Buildings in Europe - Complete worked example",
+    "implementation_note": "Your code must check Lc ≤ ifz·93.9·ε / (c0·√(Mcr/McRd)) for intermediate restraints"
+  }
+}
