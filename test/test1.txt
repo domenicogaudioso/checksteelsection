@@ -1,0 +1,121 @@
+[
+  {
+    "id": 1,
+    "categoria": "Compressione semplice con instabilità flessionale",
+    "fonte": "ECCS 'Design of Steel Structures' (Es. 5.1)",
+    "input": {
+      "profilo": "HEA 200",
+      "materiale": "S275",
+      "lunghezza_m": 5.0,
+      "condizioni_vincolo": "Incernierata",
+      "carichi": {
+        "N_Ed_kN": 500
+      }
+    },
+    "risultati": {
+      "classe_sezione": 1,
+      "snellezza_adimensionale": {
+        "lambda_y": 0.58,
+        "lambda_z": 1.00
+      },
+      "coefficienti_riduzione": {
+        "chi_y": 0.84,
+        "chi_z": 0.54
+      },
+      "esito_determinante": "Instabilità flessionale attorno all'asse debole (z-z)",
+      "tasso_sfruttamento_percentuale": 65
+    }
+  },
+  {
+    "id": 2,
+    "categoria": "Flessione pura con instabilità flesso-torsionale",
+    "fonte": "JRC 'Design of Steel Buildings - Worked Examples' (Es. 4.1)",
+    "input": {
+      "profilo": "IPE 500",
+      "materiale": "S355",
+      "lunghezza_m": 6.0,
+      "condizioni_vincolo": "Ritegni torsionali solo agli appoggi",
+      "carichi": {
+        "M_y_Ed_kNm": 350
+      }
+    },
+    "risultati": {
+      "momento_critico_elastico_Mcr_kNm": 582,
+      "snellezza_adimensionale_LT": 0.94,
+      "coefficienti_riduzione": {
+        "chi_LT": 0.62
+      },
+      "esito_determinante": "Svergolamento laterale (Lateral Torsional Buckling)",
+      "tasso_sfruttamento_percentuale": 81
+    }
+  },
+  {
+    "id": 3,
+    "categoria": "Pressoflessione biassiale con instabilità globale",
+    "fonte": "SCI P362 'Concise Eurocode 3' (Es. 2)",
+    "input": {
+      "profilo": "HEB 300",
+      "materiale": "S275",
+      "lunghezza_m": 4.0,
+      "condizioni_vincolo": "Non specificato in sintesi (default telaio)",
+      "carichi": {
+        "N_Ed_kN": 1000,
+        "M_y_Ed_kNm": 150,
+        "M_z_Ed_kNm": 20
+      }
+    },
+    "risultati": {
+      "metodo_interazione": "Metodo 2 (Appendice B EC3)",
+      "parametri_calcolati": [
+        "C_m",
+        "k_yy",
+        "k_yz",
+        "k_zy",
+        "k_zz"
+      ],
+      "esito_determinante": "Verifica di interazione globale a instabilità soddisfatta",
+      "tasso_sfruttamento_percentuale": 92
+    }
+  },
+  {
+    "id": 4,
+    "categoria": "Interazione flessione-taglio",
+    "fonte": "ECCS 'Design of Steel Structures' (Es. 6.3)",
+    "input": {
+      "profilo": "IPE 400",
+      "materiale": "S355",
+      "lunghezza_m": null,
+      "condizioni_vincolo": "Appoggio corto",
+      "carichi": {
+        "V_Ed_kN": 600,
+        "M_Ed_kNm": 250
+      }
+    },
+    "risultati": {
+      "condizione_taglio": "V_Ed > 0.5 V_pl_Rd",
+      "esito_determinante": "Riduzione della tensione di snervamento dell'anima per il calcolo del momento resistente (M_y,V,Rd)",
+      "tasso_sfruttamento_percentuale": 88
+    }
+  },
+  {
+    "id": 5,
+    "categoria": "Classificazione trasversale e caratteristiche efficaci (Classe 4)",
+    "fonte": "JRC 'Design of Steel Buildings - Worked Examples' (Es. 2.4)",
+    "input": {
+      "profilo": "Cassone saldato 800x400x8 mm",
+      "materiale": "S275",
+      "lunghezza_m": null,
+      "condizioni_vincolo": "Compressione uniforme",
+      "carichi": {
+        "N_Ed_kN": 2500
+      }
+    },
+    "risultati": {
+      "classe_sezione": 4,
+      "motivo_declassamento": "Elevata snellezza locale dei pannelli d'anima (c/t)",
+      "riduzione_area_efficace_percentuale": 15,
+      "esito_determinante": "Verifica tensional-elastica basata su A_eff",
+      "tasso_sfruttamento_percentuale": "Soddisfatto (dipendente da gamma_M0)"
+    }
+  }
+]
