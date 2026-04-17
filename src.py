@@ -81,6 +81,7 @@ class InputElemento:
     kw_factor: float
     C1: float
     zg_mm: float
+    VEd_kN: float = 0.0
     sort_by: str = 'Wy'
     ascending: bool = False
     vincolo_y: str = 'Cerniera - Cerniera'
@@ -234,7 +235,8 @@ def classify_section(row: pd.Series, fy: float) -> Dict[str,int]:
 def rho_plate(lambda_p: float) -> float:
     if lambda_p <= 0.673:
         return 1.0
-    rho = (lambda_p - 0.165) / (lambda_p**2)
+    # EN 1993-1-5 Table 4.2: coefficiente 0.22 per compressione uniforme interna (psi=1)
+    rho = (lambda_p - 0.22) / (lambda_p**2)
     return max(min(rho, 1.0), 0.0)
 
 
@@ -291,6 +293,35 @@ def chi_factor(lambda_bar: float, curve: str) -> float:
     return min(1.0, chi)
 
 
+def _compute_shear_areas(row: pd.Series) -> tuple:
+    """Calcola Av,y e Av,z [cm²] se non presenti nel profilario (EC3 §6.2.6)."""
+    shape = family_shape(row['SheetName'])
+    h = float(row['Altezza_h_mm']); b = float(row['Base_b_mm']); tw = float(row['Spessore_anima_tw_mm'])
+    tf = float(row['Spessore_ala_tf_mm']) if not pd.isna(row['Spessore_ala_tf_mm']) else tw
+    A = float(row['Area_A_cm2'])
+    avx = row['Avx_cm2'] if 'Avx_cm2' in row.index else np.nan
+    avy = row['Avy_cm2'] if 'Avy_cm2' in row.index else np.nan
+    if not pd.isna(avx) and float(avx) > 0:
+        return float(avx), float(avy) if not pd.isna(avy) and float(avy) > 0 else float(avx)
+    # Fallback geometrico
+    if shape == 'I':
+        av = max((h - 2*tf) * tw, 0.6 * h * tw) / 100.0
+        az = 2 * b * tf / 100.0
+        return av, az
+    if shape == 'U':
+        av = h * tw / 100.0
+        az = 2 * b * tf / 100.0
+        return av, az
+    if shape == 'CHS':
+        av = 2.0 * A / math.pi
+        return av, av
+    if shape in {'RHS', 'SHS'}:
+        av = A * h / (h + b)
+        az = A * b / (h + b)
+        return av, az
+    return A / 2.0, A / 2.0
+
+
 def section_resistances(row: pd.Series, inp: InputElemento, classes: Dict[str,int], eff: Dict[str,float]) -> Dict[str,float]:
     Aeff_mm2 = eff['Aeff_cm2'] * 100.0; Weff_y_mm3 = eff['Weff_y_cm3'] * 1000.0; Weff_z_mm3 = eff['Weff_z_cm3'] * 1000.0
     Wgross_y_mm3 = (float(row['Wpl_x_cm3']) if classes['flessione'] <= 2 and not pd.isna(row['Wpl_x_cm3']) else float(row['Wel_x_cm3'])) * 1000.0
@@ -318,9 +349,14 @@ def section_resistances(row: pd.Series, inp: InputElemento, classes: Dict[str,in
         alpha_lt = buckling_alpha(curve_lt); chi_lt = chi_factor(lambda_lt, curve_lt); Mb_Rd = chi_lt * Mref
     else:
         Mcr = np.nan; lambda_lt = np.nan; chi_lt = np.nan; Mb_Rd = np.nan; alpha_lt = np.nan
+    Av_y_cm2, Av_z_cm2 = _compute_shear_areas(row)
+    Av_y_mm2 = Av_y_cm2 * 100.0; Av_z_mm2 = Av_z_cm2 * 100.0
+    Vpl_y_Rd = Av_y_mm2 * inp.fy / (math.sqrt(3) * inp.gamma_M0) / 1e3
+    Vpl_z_Rd = Av_z_mm2 * inp.fy / (math.sqrt(3) * inp.gamma_M0) / 1e3
     return {'Aeff_mm2': Aeff_mm2,'Weff_y_mm3': Weff_y_mm3,'Weff_z_mm3': Weff_z_mm3,'Npl_Rd_kN': Npl_Rd,'Mcy_Rd_kNm': Mcy_Rd,'Mcz_Rd_kNm': Mcz_Rd,'iy_mm': iy_mm,'iz_mm': iz_mm,
             'Ncr_y_kN': Ncr_y,'Ncr_z_kN': Ncr_z,'lambda_y': lambda_y,'lambda_z': lambda_z,'alpha_y': alpha_y,'alpha_z': alpha_z,'chi_y': chi_y,'chi_z': chi_z,'Nb_y_Rd_kN': Nb_y_Rd,'Nb_z_Rd_kN': Nb_z_Rd,
-            'Mcr_kNm': Mcr,'lambda_lt': lambda_lt,'alpha_lt': alpha_lt,'chi_lt': chi_lt,'Mb_Rd_kNm': Mb_Rd}
+            'Mcr_kNm': Mcr,'lambda_lt': lambda_lt,'alpha_lt': alpha_lt,'chi_lt': chi_lt,'Mb_Rd_kNm': Mb_Rd,
+            'Av_y_cm2': Av_y_cm2,'Av_z_cm2': Av_z_cm2,'Vpl_y_Rd_kN': Vpl_y_Rd,'Vpl_z_Rd_kN': Vpl_z_Rd}
 
 
 def check_element(row: pd.Series, inp: InputElemento, classes: Dict[str,int], eff: Dict[str,float], res: Dict[str,float]) -> Dict[str,float]:
@@ -339,19 +375,30 @@ def check_element(row: pd.Series, inp: InputElemento, classes: Dict[str,int], ef
     if classes['pressoflessione'] <= 2:
         wg = float(row['Wel_x_cm3']); wp = float(row['Wpl_x_cm3']) if not pd.isna(row['Wpl_x_cm3']) else wg
         wg2 = float(row['Wel_y_cm3']); wp2 = float(row['Wpl_y_cm3']) if not pd.isna(row['Wpl_y_cm3']) else wg2
-        mu_y = min(res['lambda_y']*(2.0-4.0) + max((wp-wg)/max(wg,1e-9), 0.0), 0.9); mu_z = min(res['lambda_z']*(2.0-4.0) + max((wp2-wg2)/max(wg2,1e-9), 0.0), 0.9)
+        # EC3 Annex B Table B.1: mu = lambda*(2*alpha-4) + (Wpl-Wel)/Wel
+        mu_y = min(res['lambda_y']*(2*res['alpha_y']-4) + max((wp-wg)/max(wg,1e-9), 0.0), 0.9)
+        mu_z = min(res['lambda_z']*(2*res['alpha_z']-4) + max((wp2-wg2)/max(wg2,1e-9), 0.0), 0.9)
     else:
-        mu_y = min(res['lambda_y']*(2.0-4.0), 0.9); mu_z = min(res['lambda_z']*(2.0-4.0), 0.9)
-    ky = max(1 - mu_y*N/max(res['Nb_y_Rd_kN']/max(inp.gamma_M1,1e-9), 1e-9), 0.2); kz = max(1 - mu_z*N/max(res['Nb_z_Rd_kN']/max(inp.gamma_M1,1e-9), 1e-9), 0.2)
+        mu_y = min(res['lambda_y']*(2*res['alpha_y']-4), 0.9)
+        mu_z = min(res['lambda_z']*(2*res['alpha_z']-4), 0.9)
+    # EC3 Annex B: ky = 1 - mu_y*NEd/Nb,y,Rd  (Nb,y,Rd già comprende gamma_M1)
+    ky = max(1 - mu_y*N/max(res['Nb_y_Rd_kN'], 1e-9), 0.2); kz = max(1 - mu_z*N/max(res['Nb_z_Rd_kN'], 1e-9), 0.2)
     eta_inst = N/max(Nmin,1e-9) + ky*My/max(res['Mcy_Rd_kNm'],1e-9) + kz*Mz/max(res['Mcz_Rd_kNm'],1e-9)
     if not pd.isna(res['Mb_Rd_kNm']):
-        mu_lt = min(0.15*res['lambda_lt'] - 0.15, 0.9); klt = max(1 - mu_lt*N/max(res['Nb_z_Rd_kN']/max(inp.gamma_M1,1e-9), 1e-9), 0.2)
+        mu_lt = min(0.15*res['lambda_lt'] - 0.15, 0.9); klt = max(1 - mu_lt*N/max(res['Nb_z_Rd_kN'], 1e-9), 0.2)
         eta_ltb = N/max(res['Nb_z_Rd_kN'],1e-9) + klt*My/max(res['Mb_Rd_kNm'],1e-9) + kz*Mz/max(res['Mcz_Rd_kNm'],1e-9)
     else:
         mu_lt = np.nan; klt = np.nan; eta_ltb = np.nan
+    # Verifica a taglio EC3 §6.2.6
+    VEd = abs(inp.VEd_kN)
+    Vpl_Rd = res['Vpl_y_Rd_kN']
+    eta_V = VEd / max(Vpl_Rd, 1e-9)
+    # Interazione M-V EC3 §6.2.8: riduzione fy se VEd > 0.5*Vpl,Rd
+    rho_MV = ((2*VEd/max(Vpl_Rd, 1e-9) - 1)**2) if VEd > 0.5*Vpl_Rd else 0.0
     return {'eta_Nsec': eta_Nsec,'eta_Nbuck': eta_Nbuck,'eta_sec': eta_sec,'eta_inst': eta_inst,'eta_ltb': eta_ltb,
             'ok_Nsec': eta_Nsec <= 1.0,'ok_Nbuck': eta_Nbuck <= 1.0,'ok_sec': eta_sec <= 1.0,'ok_inst': eta_inst <= 1.0,'ok_ltb': (eta_ltb <= 1.0) if not pd.isna(eta_ltb) else True,
-            'MNy_kNm': MNy,'MNz_kNm': MNz,'a_red': a_red,'beta': beta,'mu_y': mu_y,'mu_z': mu_z,'ky': ky,'kz': kz,'mu_lt': mu_lt,'klt': klt}
+            'MNy_kNm': MNy,'MNz_kNm': MNz,'a_red': a_red,'beta': beta,'mu_y': mu_y,'mu_z': mu_z,'ky': ky,'kz': kz,'mu_lt': mu_lt,'klt': klt,
+            'eta_V': eta_V,'ok_V': eta_V <= 1.0,'rho_MV': rho_MV}
 
 
 def _fmt(v, nd=4):
@@ -396,11 +443,11 @@ def class4_table(row: pd.Series, fy: float, classes: Dict[str,int], eff: Dict[st
         {'Parametro':'W_eff,x [cm³]','Formula':'Weff,x da sezione efficace','Sostituzione':'riduzione coerente con la parte compressa','Risultato':_fmt(eff['Weff_y_cm3'],4)},
         {'Parametro':'W_eff,y [cm³]','Formula':'Weff,y da sezione efficace','Sostituzione':'riduzione coerente con la parte compressa','Risultato':_fmt(eff['Weff_z_cm3'],4)},
         {'Parametro':'λp_flange [-]','Formula':'λp = (c/t)/(28.4 ε √k)','Sostituzione':'elemento compresso implementato','Risultato':_fmt(eff['lambda_p_flange'],4)},
-        {'Parametro':'ρ_flange [-]','Formula':'ρ = 1 se λp≤0.673; altrimenti (λp-0.165)/λp²','Sostituzione':'-','Risultato':_fmt(eff['rho_flange'],4)},
+        {'Parametro':'ρ_flange [-]','Formula':'ρ = 1 se λp≤0.673; altrimenti (λp-0.22)/λp²','Sostituzione':'-','Risultato':_fmt(eff['rho_flange'],4)},
         {'Parametro':'λp_web,comp [-]','Formula':'λp = (c/t)/(28.4 ε √k)','Sostituzione':'elemento interno in compressione','Risultato':_fmt(eff['lambda_p_web_comp'],4)},
-        {'Parametro':'ρ_web,comp [-]','Formula':'ρ = 1 se λp≤0.673; altrimenti (λp-0.165)/λp²','Sostituzione':'-','Risultato':_fmt(eff['rho_web_comp'],4)},
+        {'Parametro':'ρ_web,comp [-]','Formula':'ρ = 1 se λp≤0.673; altrimenti (λp-0.22)/λp²','Sostituzione':'-','Risultato':_fmt(eff['rho_web_comp'],4)},
         {'Parametro':'λp_web,fless [-]','Formula':'λp = (c/t)/(28.4 ε √k)','Sostituzione':'parte compressa in flessione','Risultato':_fmt(eff['lambda_p_web_bend'],4)},
-        {'Parametro':'ρ_web,fless [-]','Formula':'ρ = 1 se λp≤0.673; altrimenti (λp-0.165)/λp²','Sostituzione':'-','Risultato':_fmt(eff['rho_web_bend'],4)},
+        {'Parametro':'ρ_web,fless [-]','Formula':'ρ = 1 se λp≤0.673; altrimenti (λp-0.22)/λp²','Sostituzione':'-','Risultato':_fmt(eff['rho_web_bend'],4)},
     ]
     return pd.DataFrame(lines)
 
@@ -466,6 +513,17 @@ def interaction_table(inp: InputElemento, res: Dict[str,float], checks: Dict[str
         {'Parametro':'μLT [-]','Formula':'μLT = min(0.15·λLT - 0.15 ; 0.9)','Sostituzione':'-','Risultato':_fmt(checks['mu_lt'],4)},
         {'Parametro':'kLT [-]','Formula':'kLT = max[1 - μLT·NEd/(Nb,z,Rd/γM1) ; 0.2]','Sostituzione':'-','Risultato':_fmt(checks['klt'],4)},
         {'Parametro':'ηLT [-]','Formula':'η = N/Nb,z,Rd + kLT·My/Mb,Rd + kz·Mz/Mcz,Rd','Sostituzione':'-','Risultato':_fmt(checks['eta_ltb'],4)},
+    ]
+    return pd.DataFrame(lines)
+
+
+def shear_table(inp: InputElemento, res: Dict[str,float], checks: Dict[str,float]) -> pd.DataFrame:
+    lines = [
+        {'Parametro': 'Av,y [cm²]', 'Formula': 'Area a taglio asse y (da profilario o formula geometrica)', 'Sostituzione': '-', 'Risultato': _fmt(res['Av_y_cm2'], 4)},
+        {'Parametro': 'Vpl,y,Rd [kN]', 'Formula': 'Vpl,Rd = Av · fy / (√3 · γM0)', 'Sostituzione': f'{_fmt(res["Av_y_cm2"],4)}·100·{_fmt(inp.fy,1)}/(√3·{_fmt(inp.gamma_M0,2)})/1000', 'Risultato': _fmt(res['Vpl_y_Rd_kN'], 4)},
+        {'Parametro': 'VEd [kN]', 'Formula': 'Taglio di progetto', 'Sostituzione': '-', 'Risultato': _fmt(abs(inp.VEd_kN), 4)},
+        {'Parametro': 'ηV [-]', 'Formula': 'ηV = VEd / Vpl,y,Rd', 'Sostituzione': f'{_fmt(abs(inp.VEd_kN),4)}/{_fmt(res["Vpl_y_Rd_kN"],4)}', 'Risultato': _fmt(checks['eta_V'], 4)},
+        {'Parametro': 'ρ M-V [-]', 'Formula': 'ρ = (2VEd/Vpl,Rd - 1)² se VEd > 0.5·Vpl,Rd (EC3 §6.2.8)', 'Sostituzione': '-', 'Risultato': _fmt(checks['rho_MV'], 4)},
     ]
     return pd.DataFrame(lines)
 
@@ -725,9 +783,323 @@ def ltbeam_eigenmode_placeholder(res: dict) -> go.Figure:
     fig.add_trace(go.Scatter(x=x, y=vp, name="v'"))
     fig.add_trace(go.Scatter(x=x, y=thp, name="θ'"))
     fig.update_layout(
-        template='plotly_white', 
-        height=280, 
-        title='Eigenmode LTBeam-style (shape qualitativa)', 
+        template='plotly_white',
+        height=280,
+        title='Eigenmode LTBeam-style (shape qualitativa)',
         xaxis_title='x [m]'
     )
     return fig
+
+
+# ---------------------------------------------------------------------------
+# GENERAZIONE RELAZIONI DI CALCOLO
+# ---------------------------------------------------------------------------
+
+def _pdf_table(pdf, df: pd.DataFrame, col_widths: List[float]) -> None:
+    """Stampa un DataFrame su PDF come tabella a righe alternate."""
+    from fpdf import FPDF
+    pdf.set_font('Helvetica', 'B', 8)
+    pdf.set_fill_color(200, 220, 240)
+    for i, col in enumerate(df.columns):
+        pdf.cell(col_widths[i], 6, str(col), border=1, fill=True)
+    pdf.ln()
+    pdf.set_font('Helvetica', '', 7)
+    for idx, row_data in df.iterrows():
+        fill = (idx % 2 == 0)
+        if fill:
+            pdf.set_fill_color(245, 248, 252)
+        else:
+            pdf.set_fill_color(255, 255, 255)
+        for i, val in enumerate(row_data):
+            txt = str(val) if val is not None and not (isinstance(val, float) and math.isnan(val)) else 'n/a'
+            pdf.cell(col_widths[i], 5, txt[:38], border=1, fill=True)
+        pdf.ln()
+
+
+def generate_pdf_report(row: pd.Series, inp: InputElemento, classes: Dict[str, int],
+                        eff: Dict[str, float], res: Dict[str, float], checks: Dict[str, float]) -> bytes:
+    """Genera relazione di calcolo in formato PDF (fpdf2)."""
+    from fpdf import FPDF
+    import datetime
+
+    pdf = FPDF()
+    pdf.set_margins(15, 15, 15)
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+
+    # Intestazione
+    pdf.set_font('Helvetica', 'B', 16)
+    pdf.cell(0, 10, 'RELAZIONE DI CALCOLO', ln=True, align='C')
+    pdf.set_font('Helvetica', 'B', 13)
+    pdf.cell(0, 8, 'Verifica Profilo Acciaio - EN 1993-1-1 / NTC 2018', ln=True, align='C')
+    pdf.set_font('Helvetica', '', 9)
+    pdf.cell(0, 6, f'Data: {datetime.date.today().strftime("%d/%m/%Y")}   |   Profilo: {row["Denominazione"]}   |   Acciaio: {inp.acciaio}  fy={inp.fy:.0f} MPa', ln=True, align='C')
+    pdf.ln(4)
+
+    # Parametri di input
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.set_fill_color(30, 80, 150)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(0, 7, '  1. PARAMETRI DI INPUT', ln=True, fill=True)
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font('Helvetica', '', 9)
+    input_data = [
+        ('Profilo', row['Denominazione']), ('Famiglia', row['Categoria']), ('Norma', row['Norma']),
+        ('Acciaio', inp.acciaio), ('fy [MPa]', f'{inp.fy:.0f}'), ('γM0', f'{inp.gamma_M0:.2f}'), ('γM1', f'{inp.gamma_M1:.2f}'),
+        ('l0y [m]', f'{inp.l0y_m:.3f}'), ('l0z [m]', f'{inp.l0z_m:.3f}'), ('L_LTB [m]', f'{inp.L_ltb_m:.3f}'),
+        ('NEd [kN]', f'{inp.NEd_kN:.2f}'), ('My,Ed [kNm]', f'{inp.MyEd_kNm:.2f}'), ('Mz,Ed [kNm]', f'{inp.MzEd_kNm:.2f}'),
+        ('VEd [kN]', f'{inp.VEd_kN:.2f}'), ('Curva y', inp.curve_y), ('Curva z', inp.curve_z),
+        ('k [-]', f'{inp.k_factor:.2f}'), ('kw [-]', f'{inp.kw_factor:.2f}'), ('C1 [-]', f'{inp.C1:.2f}'),
+    ]
+    col_w = [50, 130]
+    for param, val in input_data:
+        pdf.cell(col_w[0], 5, param, border=1)
+        pdf.cell(col_w[1], 5, str(val), border=1, ln=True)
+    pdf.ln(3)
+
+    # Classificazione
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.set_fill_color(30, 80, 150)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(0, 7, '  2. CLASSIFICAZIONE DELLA SEZIONE', ln=True, fill=True)
+    pdf.set_text_color(0, 0, 0)
+    df_cl = class_table(row, inp.fy, classes)
+    _pdf_table(pdf, df_cl, [50, 70, 50, 10])
+    pdf.set_font('Helvetica', 'I', 8)
+    pdf.cell(0, 5, f'Classe compressione: {classes["compressione"]}  |  Classe flessione: {classes["flessione"]}  |  Classe pressoflessione: {classes["pressoflessione"]}', ln=True)
+    pdf.ln(3)
+
+    # Sezione efficace (solo se classe 4)
+    if classes['pressoflessione'] == 4:
+        pdf.set_font('Helvetica', 'B', 11)
+        pdf.set_fill_color(30, 80, 150)
+        pdf.set_text_color(255, 255, 255)
+        pdf.cell(0, 7, '  3. SEZIONE EFFICACE (CLASSE 4)', ln=True, fill=True)
+        pdf.set_text_color(0, 0, 0)
+        df_c4 = class4_table(row, inp.fy, classes, eff)
+        _pdf_table(pdf, df_c4, [45, 80, 35, 20])
+        pdf.ln(3)
+
+    # Resistenze
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.set_fill_color(30, 80, 150)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(0, 7, '  4. RESISTENZE DELLA SEZIONE', ln=True, fill=True)
+    pdf.set_text_color(0, 0, 0)
+    df_res = resistance_table(row, inp, res)
+    _pdf_table(pdf, df_res, [45, 80, 35, 20])
+    pdf.ln(3)
+
+    # Verifica a taglio
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.set_fill_color(30, 80, 150)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(0, 7, '  5. VERIFICA A TAGLIO (EC3 §6.2.6)', ln=True, fill=True)
+    pdf.set_text_color(0, 0, 0)
+    df_sh = shear_table(inp, res, checks)
+    _pdf_table(pdf, df_sh, [35, 90, 35, 20])
+    ok_v_txt = 'VERIFICATO' if checks['ok_V'] else 'NON VERIFICATO'
+    pdf.set_font('Helvetica', 'B', 9)
+    clr = (21, 128, 61) if checks['ok_V'] else (185, 28, 28)
+    pdf.set_text_color(*clr)
+    pdf.cell(0, 6, f'Taglio: {ok_v_txt}  (etaV = {checks["eta_V"]:.3f})', ln=True)
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(3)
+
+    pdf.add_page()
+
+    # Instabilità
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.set_fill_color(30, 80, 150)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(0, 7, '  6. INSTABILITA\' PER FORZA NORMALE', ln=True, fill=True)
+    pdf.set_text_color(0, 0, 0)
+    df_buck = buckling_table(inp, res)
+    _pdf_table(pdf, df_buck, [45, 80, 35, 20])
+    pdf.ln(3)
+
+    # Svergolamento
+    if not pd.isna(res['Mb_Rd_kNm']):
+        pdf.set_font('Helvetica', 'B', 11)
+        pdf.set_fill_color(30, 80, 150)
+        pdf.set_text_color(255, 255, 255)
+        pdf.cell(0, 7, '  7. SVERGOLAMENTO / INSTAB. FLESSO-TORSIONALE', ln=True, fill=True)
+        pdf.set_text_color(0, 0, 0)
+        df_ltb = ltb_table(inp, res)
+        _pdf_table(pdf, df_ltb, [35, 100, 35, 10])
+        pdf.ln(3)
+
+    # Verifiche di elemento
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.set_fill_color(30, 80, 150)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(0, 7, '  8. VERIFICHE FINALI DI ELEMENTO', ln=True, fill=True)
+    pdf.set_text_color(0, 0, 0)
+    df_int = interaction_table(inp, res, checks)
+    _pdf_table(pdf, df_int, [35, 100, 35, 10])
+    pdf.ln(4)
+
+    # Riepilogo verifiche
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.set_fill_color(30, 80, 150)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(0, 7, '  9. RIEPILOGO VERIFICHE', ln=True, fill=True)
+    pdf.set_text_color(0, 0, 0)
+    checks_summary = [
+        ('η N sezione', checks['eta_Nsec'], checks['ok_Nsec']),
+        ('η N instabilità', checks['eta_Nbuck'], checks['ok_Nbuck']),
+        ('η pressoflessione sezione', checks['eta_sec'], checks['ok_sec']),
+        ('η instabilità fless.+comp.', checks['eta_inst'], checks['ok_inst']),
+        ('η taglio', checks['eta_V'], checks['ok_V']),
+    ]
+    if not pd.isna(checks['eta_ltb']):
+        checks_summary.append(('η svergolamento', checks['eta_ltb'], checks['ok_ltb']))
+    pdf.set_font('Helvetica', 'B', 9)
+    pdf.cell(80, 6, 'Verifica', border=1, fill=False)
+    pdf.cell(30, 6, 'η [-]', border=1)
+    pdf.cell(40, 6, 'Stato', border=1, ln=True)
+    pdf.set_font('Helvetica', '', 9)
+    all_ok = True
+    for label, eta, ok in checks_summary:
+        clr = (21, 128, 61) if ok else (185, 28, 28)
+        pdf.set_text_color(*clr)
+        pdf.cell(80, 6, label, border=1)
+        pdf.cell(30, 6, f'{eta:.3f}' if not (isinstance(eta, float) and math.isnan(eta)) else 'n/a', border=1)
+        pdf.cell(40, 6, 'VERIFICATO' if ok else 'NON VERIFICATO', border=1, ln=True)
+        if not ok:
+            all_ok = False
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(4)
+    pdf.set_font('Helvetica', 'B', 12)
+    if all_ok:
+        pdf.set_fill_color(220, 252, 231)
+        pdf.set_text_color(21, 128, 61)
+        pdf.cell(0, 10, 'PROFILO VERIFICATO - TUTTE LE VERIFICHE SODDISFATTE', ln=True, align='C', fill=True, border=1)
+    else:
+        pdf.set_fill_color(254, 226, 226)
+        pdf.set_text_color(185, 28, 28)
+        pdf.cell(0, 10, 'PROFILO NON VERIFICATO - ALCUNE VERIFICHE NON SODDISFATTE', ln=True, align='C', fill=True, border=1)
+    pdf.set_text_color(0, 0, 0)
+
+    return bytes(pdf.output())
+
+
+def generate_word_report(row: pd.Series, inp: InputElemento, classes: Dict[str, int],
+                         eff: Dict[str, float], res: Dict[str, float], checks: Dict[str, float]) -> bytes:
+    """Genera relazione di calcolo in formato Word (python-docx)."""
+    from docx import Document
+    from docx.shared import Pt, RGBColor, Cm
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    from io import BytesIO
+    import datetime
+
+    doc = Document()
+    for section in doc.sections:
+        section.top_margin = Cm(2)
+        section.bottom_margin = Cm(2)
+        section.left_margin = Cm(2.5)
+        section.right_margin = Cm(2.5)
+
+    def add_heading(text: str, level: int = 1):
+        h = doc.add_heading(text, level=level)
+        h.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        return h
+
+    def add_df_table(df: pd.DataFrame):
+        t = doc.add_table(rows=1, cols=len(df.columns))
+        t.style = 'Table Grid'
+        hdr = t.rows[0].cells
+        for i, col in enumerate(df.columns):
+            hdr[i].text = str(col)
+            hdr[i].paragraphs[0].runs[0].bold = True
+        for _, row_data in df.iterrows():
+            cells = t.add_row().cells
+            for i, val in enumerate(row_data):
+                txt = str(val) if val is not None and not (isinstance(val, float) and math.isnan(val)) else 'n/a'
+                cells[i].text = txt
+        doc.add_paragraph()
+
+    def add_check_badge(label: str, eta: float, ok: bool):
+        p = doc.add_paragraph()
+        run = p.add_run(f'{label}: η = {eta:.3f} → {"VERIFICATO" if ok else "NON VERIFICATO"}')
+        run.bold = True
+        run.font.color.rgb = RGBColor(0x15, 0x80, 0x3d) if ok else RGBColor(0xb9, 0x1c, 0x1c)
+
+    # Titolo
+    title = doc.add_heading('RELAZIONE DI CALCOLO', 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    sub = doc.add_paragraph('Verifica Profilo Acciaio — EN 1993-1-1 / NTC 2018')
+    sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    sub.runs[0].bold = True
+    doc.add_paragraph(f'Data: {datetime.date.today().strftime("%d/%m/%Y")}   |   Profilo: {row["Denominazione"]}   |   Acciaio: {inp.acciaio}  fy = {inp.fy:.0f} MPa').alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    # 1. Input
+    add_heading('1. Parametri di Input', level=1)
+    input_df = pd.DataFrame([
+        ('Profilo', row['Denominazione']), ('Famiglia', row['Categoria']), ('Acciaio', inp.acciaio),
+        ('fy [MPa]', f'{inp.fy:.0f}'), ('γM0', f'{inp.gamma_M0:.2f}'), ('γM1', f'{inp.gamma_M1:.2f}'),
+        ('l0y [m]', f'{inp.l0y_m:.3f}'), ('l0z [m]', f'{inp.l0z_m:.3f}'), ('L_LTB [m]', f'{inp.L_ltb_m:.3f}'),
+        ('NEd [kN]', f'{inp.NEd_kN:.2f}'), ('My,Ed [kNm]', f'{inp.MyEd_kNm:.2f}'), ('Mz,Ed [kNm]', f'{inp.MzEd_kNm:.2f}'),
+        ('VEd [kN]', f'{inp.VEd_kN:.2f}'), ('Curva y', inp.curve_y), ('Curva z', inp.curve_z),
+    ], columns=['Parametro', 'Valore'])
+    add_df_table(input_df)
+
+    # 2. Classificazione
+    add_heading('2. Classificazione della Sezione', level=1)
+    add_df_table(class_table(row, inp.fy, classes))
+    doc.add_paragraph(f'Classe compressione: {classes["compressione"]}  |  Classe flessione: {classes["flessione"]}  |  Classe pressoflessione: {classes["pressoflessione"]}')
+
+    # 3. Sezione efficace
+    if classes['pressoflessione'] == 4:
+        add_heading('3. Sezione Efficace (Classe 4)', level=1)
+        add_df_table(class4_table(row, inp.fy, classes, eff))
+
+    # 4. Resistenze
+    add_heading('4. Resistenze della Sezione', level=1)
+    add_df_table(resistance_table(row, inp, res))
+
+    # 5. Taglio
+    add_heading('5. Verifica a Taglio (EC3 §6.2.6)', level=1)
+    add_df_table(shear_table(inp, res, checks))
+    add_check_badge('Taglio', checks['eta_V'], checks['ok_V'])
+
+    # 6. Instabilità
+    add_heading('6. Instabilità per Forza Normale', level=1)
+    add_df_table(buckling_table(inp, res))
+
+    # 7. Svergolamento
+    if not pd.isna(res['Mb_Rd_kNm']):
+        add_heading('7. Svergolamento / Instabilità Flesso-Torsionale', level=1)
+        add_df_table(ltb_table(inp, res))
+
+    # 8. Verifiche di elemento
+    add_heading('8. Verifiche Finali di Elemento', level=1)
+    add_df_table(interaction_table(inp, res, checks))
+
+    # 9. Riepilogo
+    add_heading('9. Riepilogo Verifiche', level=1)
+    checks_summary = [
+        ('η N sezione', checks['eta_Nsec'], checks['ok_Nsec']),
+        ('η N instabilità', checks['eta_Nbuck'], checks['ok_Nbuck']),
+        ('η pressoflessione sezione', checks['eta_sec'], checks['ok_sec']),
+        ('η instabilità fless.+comp.', checks['eta_inst'], checks['ok_inst']),
+        ('η taglio', checks['eta_V'], checks['ok_V']),
+    ]
+    if not pd.isna(checks['eta_ltb']):
+        checks_summary.append(('η svergolamento', checks['eta_ltb'], checks['ok_ltb']))
+    for label, eta, ok in checks_summary:
+        add_check_badge(label, eta if not (isinstance(eta, float) and math.isnan(eta)) else 0.0, ok)
+
+    all_ok = all(ok for _, _, ok in checks_summary)
+    verdict = doc.add_paragraph()
+    verdict_run = verdict.add_run('PROFILO VERIFICATO - TUTTE LE VERIFICHE SODDISFATTE' if all_ok else 'PROFILO NON VERIFICATO - ALCUNE VERIFICHE NON SODDISFATTE')
+    verdict_run.bold = True
+    verdict_run.font.size = Pt(13)
+    verdict_run.font.color.rgb = RGBColor(0x15, 0x80, 0x3d) if all_ok else RGBColor(0xb9, 0x1c, 0x1c)
+    verdict.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    bio = BytesIO()
+    doc.save(bio)
+    return bio.getvalue()

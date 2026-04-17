@@ -4,13 +4,14 @@ import pandas as pd
 import streamlit as st
 from src import (
     WORKBOOK_NAME, GAMMA_MODES, STEEL_GRADES, VINCOLI_K, WARPING_KW, C1_PRESET,
-    LTB_END_PRESETS, LTB_INPLANE, LTB_RESTRAINT_TYPES, # Nuove importazioni LTBeam
+    LTB_END_PRESETS, LTB_INPLANE, LTB_RESTRAINT_TYPES,
     load_profile_database, sort_database, get_row,
     InputElemento, validate_profile_input, classify_section, class4_effective_properties,
     section_resistances, check_element, summary_dataframe, notes,
     figura_sezione_2d, figura_sezione_3d, to_json_bytes,
-    class_table, class4_table, resistance_table, buckling_table, ltb_table, interaction_table,
-    ltbeam_style_analysis, ltbeam_input_table, ltbeam_results_table, ltbeam_diagram_figure, ltbeam_eigenmode_placeholder # Nuove importazioni LTBeam
+    class_table, class4_table, resistance_table, buckling_table, ltb_table, interaction_table, shear_table,
+    ltbeam_style_analysis, ltbeam_input_table, ltbeam_results_table, ltbeam_diagram_figure, ltbeam_eigenmode_placeholder,
+    generate_pdf_report, generate_word_report,
 )
 
 st.set_page_config(page_title='ProfiliAcciaio', layout='wide')
@@ -88,6 +89,7 @@ with st.sidebar:
     NEd_kN = st.number_input('NEd [kN] (compressione positiva)', -50000.0, 50000.0, float(defaults['NEd_kN']), 10.0)
     MyEd_kNm = st.number_input('My,Ed [kNm]', -50000.0, 50000.0, float(defaults['MyEd_kNm']), 10.0)
     MzEd_kNm = st.number_input('Mz,Ed [kNm]', -50000.0, 50000.0, float(defaults['MzEd_kNm']), 10.0)
+    VEd_kN = st.number_input('VEd [kN] (taglio di progetto)', -50000.0, 50000.0, float(defaults.get('VEd_kN', 0.0)), 10.0)
     curve_y = st.selectbox('Curva instabilità asse y', ['a0','a','b','c','d'], index=['a0','a','b','c','d'].index(defaults['curve_y']))
     curve_z = st.selectbox('Curva instabilità asse z', ['a0','a','b','c','d'], index=['a0','a','b','c','d'].index(defaults['curve_z']))
 
@@ -123,7 +125,7 @@ with st.sidebar:
 inp = InputElemento(
     gamma_mode=gamma_mode, gamma_M0=gamma['gamma_M0'], gamma_M1=gamma['gamma_M1'],
     acciaio=acciaio, fy=fy, sheet_name=sheet_name, designation=designation,
-    l0y_m=l0y_m, l0z_m=l0z_m, L_ltb_m=L_ltb_m, NEd_kN=NEd_kN, MyEd_kNm=MyEd_kNm, MzEd_kNm=MzEd_kNm,
+    l0y_m=l0y_m, l0z_m=l0z_m, L_ltb_m=L_ltb_m, NEd_kN=NEd_kN, MyEd_kNm=MyEd_kNm, MzEd_kNm=MzEd_kNm, VEd_kN=VEd_kN,
     curve_y=curve_y, curve_z=curve_z, k_factor=k_factor, kw_factor=kw_factor, C1=C1, zg_mm=zg_mm,
     sort_by=sort_by, ascending=ascending, vincolo_y=vincolo_y, vincolo_z=vincolo_z, warping_label=warping_label, c1_label=c1_label,
 )
@@ -142,12 +144,13 @@ checks = check_element(row, inp, classes, eff, res)
 df_sum = summary_dataframe(row, inp, classes, eff, res, checks)
 notes_list = notes(row, classes, eff, checks)
 
-c1, c2, c3, c4, c5 = st.columns(5)
+c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric('Npl,Rd [kN]', f"{res['Npl_Rd_kN']:.0f}")
 c2.metric('Nb,min,Rd [kN]', f"{min(res['Nb_y_Rd_kN'], res['Nb_z_Rd_kN']):.0f}")
 c3.metric('Mcy,Rd [kNm]', f"{res['Mcy_Rd_kNm']:.1f}")
 c4.metric('Mb,Rd [kNm]', f"{res['Mb_Rd_kNm']:.1f}" if not pd.isna(res['Mb_Rd_kNm']) else 'n/a')
-c5.metric('η max', f"{max([v for v in [checks['eta_Nsec'], checks['eta_Nbuck'], checks['eta_sec'], checks['eta_inst'], checks['eta_ltb']] if not pd.isna(v)]):.3f}")
+c5.metric('Vpl,y,Rd [kN]', f"{res['Vpl_y_Rd_kN']:.0f}")
+c6.metric('η max', f"{max([v for v in [checks['eta_Nsec'], checks['eta_Nbuck'], checks['eta_sec'], checks['eta_inst'], checks['eta_V'], checks['eta_ltb']] if not pd.isna(v)]):.3f}")
 
 st.info('Nota sui vincoli: la app non può dedurre automaticamente i vincoli reali dalla sola sezione. Per questo li imposti esplicitamente nei preset o in modo personalizzato; i relativi k, kw e C1 entrano nei calcoli di instabilità e svergolamento.')
 
@@ -161,6 +164,19 @@ with T1:
         st.dataframe(df_sum, use_container_width=True, height=420)
         st.download_button('Scarica sintesi CSV', df_sum.to_csv(index=False).encode('utf-8'), 'profiliacciaio_elemento_sintesi.csv', 'text/csv')
         st.download_button('Salva input JSON', to_json_bytes(inp.__dict__), 'profiliacciaio_elemento_input.json', 'application/json')
+        dl1, dl2 = st.columns(2)
+        with dl1:
+            try:
+                pdf_bytes = generate_pdf_report(row, inp, classes, eff, res, checks)
+                st.download_button('Scarica Relazione PDF', pdf_bytes, f'relazione_{row["Denominazione"].replace(" ","_")}.pdf', 'application/pdf')
+            except Exception as e:
+                st.warning(f'PDF non disponibile: {e}')
+        with dl2:
+            try:
+                docx_bytes = generate_word_report(row, inp, classes, eff, res, checks)
+                st.download_button('Scarica Relazione Word', docx_bytes, f'relazione_{row["Denominazione"].replace(" ","_")}.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+            except Exception as e:
+                st.warning(f'Word non disponibile: {e}')
     with right:
         st.subheader('Visualizzazione del profilo')
         st.plotly_chart(figura_sezione_2d(row), use_container_width=True)
@@ -171,6 +187,7 @@ with T1:
             badge(checks['ok_sec'], 'Pressoflessione - sezione', checks['eta_sec'])
         with cvb:
             badge(checks['ok_inst'], 'Instabilità flessione + compressione', checks['eta_inst'])
+            badge(checks['ok_V'], 'Taglio (Vpl,Rd)', checks['eta_V'])
             if not pd.isna(checks['eta_ltb']):
                 badge(checks['ok_ltb'], 'Svergolamento / flesso-torsione', checks['eta_ltb'])
             else:
@@ -192,7 +209,7 @@ with T3:
 
     st.markdown('### 2) Sezione efficace per classe 4')
     st.latex(r"\lambda_p = \frac{c/t}{28.4\,\varepsilon\,\sqrt{k}}")
-    st.latex(r"\rho = 1 \;\text{se}\; \lambda_p \le 0.673, \qquad \rho = \frac{\lambda_p - 0.165}{\lambda_p^2} \;\text{altrimenti}")
+    st.latex(r"\rho = 1 \;\text{se}\; \lambda_p \le 0.673, \qquad \rho = \frac{\lambda_p - 0.22}{\lambda_p^2} \;\text{altrimenti}")
     st.dataframe(class4_table(row, inp.fy, classes, eff), use_container_width=True, height=340)
 
     st.markdown('### 3) Resistenze della sezione')
@@ -200,7 +217,12 @@ with T3:
     st.latex(r"M_{c,y,Rd} = \frac{W_{res,x}\,f_y}{\gamma_{M0}}, \qquad M_{c,z,Rd} = \frac{W_{res,y}\,f_y}{\gamma_{M0}}")
     st.dataframe(resistance_table(row, inp, res), use_container_width=True, height=260)
 
-    st.markdown('### 4) Instabilità per forza normale')
+    st.markdown('### 4) Verifica a taglio (EC3 §6.2.6)')
+    st.latex(r"V_{pl,Rd} = \frac{A_v \cdot f_y}{\sqrt{3}\,\gamma_{M0}}")
+    st.latex(r"\eta_V = \frac{V_{Ed}}{V_{pl,Rd}} \le 1.0 \qquad \rho_{MV} = \left(\frac{2V_{Ed}}{V_{pl,Rd}}-1\right)^2 \;\text{se}\; V_{Ed} > 0.5\,V_{pl,Rd}")
+    st.dataframe(shear_table(inp, res, checks), use_container_width=True, height=220)
+
+    st.markdown('### 5) Instabilità per forza normale')
     st.latex(r"N_{cr} = \frac{\pi^2 E I}{l_0^2}")
     st.latex(r"\bar\lambda = \sqrt{\frac{N_{pl,Rd}}{N_{cr}}}")
     st.latex(r"\phi = \frac{1}{2}\left[1 + \alpha(\bar\lambda - 0.2) + \bar\lambda^2\right]")
@@ -208,12 +230,12 @@ with T3:
     st.latex(r"N_{b,Rd} = \chi \frac{A_{eff} f_y}{\gamma_{M1}}")
     st.dataframe(buckling_table(inp, res), use_container_width=True, height=480)
 
-    st.markdown('### 5) Svergolamento / instabilità flesso-torsionale')
+    st.markdown('### 6) Svergolamento / instabilità flesso-torsionale')
     st.latex(r"M_{cr} = C_1 \frac{\pi^2 E I_z}{(kL)^2}\sqrt{\frac{G I_t + \pi^2 E I_w/(k_w L)^2}{E I_z}}")
     st.latex(r"\bar\lambda_{LT} = \sqrt{\frac{M_{ref}}{M_{cr}}}, \qquad M_{b,Rd} = \chi_{LT}\,M_{ref}")
     st.dataframe(ltb_table(inp, res), use_container_width=True, height=340)
 
-    st.markdown('### 6) Verifiche finali di elemento')
+    st.markdown('### 7) Verifiche finali di elemento')
     st.latex(r"\eta_{N,sez} = \frac{N_{Ed}}{N_{pl,Rd}}")
     st.latex(r"\eta_{N,inst} = \max\left(\frac{N_{Ed}}{N_{b,y,Rd}},\frac{N_{Ed}}{N_{b,z,Rd}}\right)")
     st.latex(r"\eta_{sec} = \left(\frac{N_{Ed}}{N_{pl,Rd}}\right)^2 + \left(\frac{M_{y,Ed}}{M_{Ny}}\right)^\beta + \left(\frac{M_{z,Ed}}{M_{Nz}}\right)^\beta")
@@ -229,6 +251,7 @@ with T3:
         badge(checks['ok_sec'], 'Pressoflessione - sezione', checks['eta_sec'])
         badge(checks['ok_inst'], 'Instabilità flessione + compressione', checks['eta_inst'])
     with rc:
+        badge(checks['ok_V'], 'Taglio (Vpl,Rd)', checks['eta_V'])
         if not pd.isna(checks['eta_ltb']):
             badge(checks['ok_ltb'], 'Svergolamento / flesso-torsione', checks['eta_ltb'])
 

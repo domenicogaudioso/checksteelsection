@@ -1,14 +1,14 @@
 {
-  "name": "check-steel-beam",
-  "build_context": "CheckSteelBeam",
+  "name": "check-steel-section",
+  "build_context": "CheckSteelSection",
   "icon": "circle-slash-2",
   "title": {
-    "en": "SteelBeam",
-    "it": "SteelBeam"
+    "en": "CheckSteelSection",
+    "it": "CheckSteelSection"
   },
   "description": {
-    "en": "Interactive dashboard for check commercial steel profiles.",
-    "it": "Dashboard interattiva per la verifica dei profili commerciali in acciaio."
+    "en": "Interactive dashboard for checking commercial steel profiles per EN 1993-1-1 / NTC 2018.",
+    "it": "Dashboard interattiva per la verifica dei profili commerciali in acciaio secondo EN 1993-1-1 / NTC 2018."
   },
   "required_subscription": "free"
 }
